@@ -2,6 +2,7 @@ import json
 import asyncio
 import aiosqlite
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Dict, Any
 
 from astrbot.api import logger
@@ -16,7 +17,8 @@ class MemoryManager:
         self.memory_expire_days = memory_expire_days
         self.debug_mode = debug_mode
         
-        data_path = get_astrbot_data_path()
+        data_path_str = get_astrbot_data_path()
+        data_path = Path(data_path_str) if isinstance(data_path_str, str) else data_path_str
         self.db_dir = data_path / "plugin_data" / plugin_name
         self.db_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.db_dir / "memory.db"
