@@ -1,23 +1,23 @@
 {
     "debug_mode": {
         "description": "调试模式开关",
-        "type": "boolean",
+        "type": "bool",
         "default": false
     },
     "max_recall_results": {
         "description": "最大召回记忆条数",
-        "type": "integer",
+        "type": "int",
         "default": 5
     },
     "recall_strategy": {
         "description": "检索策略",
         "type": "string",
         "default": "fuzzy",
-        "enum": ["fuzzy", "exact"]
+        "options": ["fuzzy", "exact"]
     },
     "memory_expire_days": {
-        "description": "记忆保留天数",
-        "type": "integer",
+        "description": "记忆保留天数（0 表示永久保留）",
+        "type": "int",
         "default": 30
     }
 }
