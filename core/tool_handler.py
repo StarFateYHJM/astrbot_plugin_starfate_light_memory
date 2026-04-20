@@ -35,9 +35,10 @@ class ToolHandler:
     async def handle_recall_memory(
         self, 
         event: AstrMessageEvent, 
-        keywords: str
+        keywords: str,
+        session_id_override: str = None
     ) -> str:
-        session_id = event.message_obj.session_id
+        session_id = session_id_override if session_id_override else event.message_obj.session_id
         
         self._debug_log("【工具调用流程】收到 recall_memory 调用", {
             "session_id": session_id,
