@@ -96,17 +96,26 @@ class LightMemoryPlugin(Star):
         
         message_obj = event.message_obj
         session_id = message_obj.session_id
-        role = "user" if message_obj.role == "user" else "assistant"
         content = message_obj.message_str
         
         if not content or not content.strip():
             self._debug_log("【消息监听】跳过空消息")
             return
         
+        self_id = message_obj.self_id
+        sender_id = message_obj.sender.user_id if message_obj.sender else None
+        
+        if sender_id and sender_id == self_id:
+            role = "assistant"
+        else:
+            role = "user"
+        
         self._debug_log("【消息监听】准备写入记忆", {
             "session_id": session_id,
             "role": role,
-            "content_length": len(content)
+            "content_length": len(content),
+            "self_id": self_id,
+            "sender_id": sender_id
         })
         
         success = await self.memory_manager.add_memory(
