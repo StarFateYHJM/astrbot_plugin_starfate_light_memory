@@ -79,8 +79,8 @@ class LightMemoryPlugin(Star):
         
         return result_text
     
-    @filter.on_message()
-    async def on_message(self, event: AstrMessageEvent):
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_all_event(self, event: AstrMessageEvent):
         self._debug_log("【消息监听】收到新消息")
         
         message_obj = event.message_obj
