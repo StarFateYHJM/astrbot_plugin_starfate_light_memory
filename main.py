@@ -1,9 +1,14 @@
 import json
 from typing import Optional
+from pydantic import Field
+from pydantic.dataclasses import dataclass
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.agent.tool import FunctionTool, ToolExecResult
+from astrbot.core.astr_agent_context import AstrAgentContext
 
 from .core import MemoryManager, ToolHandler
 
@@ -38,8 +43,6 @@ class LightMemoryPlugin(Star):
         
         self.tool_handler = ToolHandler(self.memory_manager, debug_mode=self.debug_mode)
         
-        self._register_llm_tools()
-        
         self._debug_log("【插件初始化】完成")
         logger.info(f"[StarfateMemory] 插件初始化完成 - debug_mode: {self.debug_mode}")
     
@@ -50,34 +53,42 @@ class LightMemoryPlugin(Star):
             else:
                 logger.debug(f"[StarfateMemory][DEBUG] {message}")
     
-    def _register_llm_tools(self):
-        self._debug_log("【工具注册】注册 recall_memory 工具")
+    @dataclass
+    class RecallMemoryTool(FunctionTool[AstrAgentContext]):
+        plugin_ref: "LightMemoryPlugin" = None
         
-        self.context.register_llm_tool(
-            name="recall_memory",
-            description="当需要回忆或查询与用户的历史对话内容时调用此工具。仅在确实需要参考过去对话信息时才使用。",
-            parameters=self.tool_handler.get_tool_parameters(),
-            handler=self._on_recall_memory
+        name: str = "recall_memory"
+        description: str = "当需要回忆或查询与用户的历史对话内容时调用此工具。仅在确实需要参考过去对话信息时才使用。"
+        parameters: dict = Field(
+            default_factory=lambda: {
+                "type": "object",
+                "properties": {
+                    "keywords": {
+                        "type": "string",
+                        "description": "检索关键词，多个关键词用空格分隔。请提取用户问题中最核心的词汇。"
+                    }
+                },
+                "required": ["keywords"]
+            }
         )
         
-        self._debug_log("【工具注册】recall_memory 工具注册完成")
-        logger.info("[StarfateMemory] LLM 工具 recall_memory 已注册")
-    
-    async def _on_recall_memory(self, event: AstrMessageEvent, **kwargs):
-        self._debug_log("【工具回调】_on_recall_memory 被调用", {"kwargs": kwargs})
-        
-        keywords = kwargs.get("keywords", "")
-        
-        if not keywords:
-            self._debug_log("【工具回调】关键词为空")
-            return "错误：未提供检索关键词。"
-        
-        result_text = await self.tool_handler.handle_recall_memory(
-            event=event,
-            keywords=keywords
-        )
-        
-        return result_text
+        async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+            event = context.context.event
+            keywords = kwargs.get("keywords", "")
+            
+            self.plugin_ref._debug_log("【工具调用】recall_memory 被调用", {"keywords": keywords})
+            
+            if not keywords:
+                self.plugin_ref._debug_log("【工具调用】关键词为空")
+                return ToolExecResult(result="错误：未提供检索关键词。")
+            
+            result_text = await self.plugin_ref.tool_handler.handle_recall_memory(
+                event=event,
+                keywords=keywords
+            )
+            
+            self.plugin_ref._debug_log("【工具调用】返回结果", {"result_length": len(result_text)})
+            return ToolExecResult(result=result_text)
     
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_all_event(self, event: AstrMessageEvent):
