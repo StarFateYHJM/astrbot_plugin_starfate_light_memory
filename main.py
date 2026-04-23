@@ -1,17 +1,17 @@
 import json
-from typing import Optional
-from pydantic import Field
-from pydantic.dataclasses import dataclass
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass, field
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from astrbot.api.message_components import At, Plain
+from astrbot.api.message_components import At
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
-from .core import MemoryManager, ToolHandler
+from .memory_manager import MemoryManager
 
 
 @register(
@@ -31,9 +31,7 @@ class LightMemoryPlugin(Star):
         self.max_recall_results = self.config.get("max_recall_results", 5)
         self.memory_expire_days = self.config.get("memory_expire_days", 30)
         
-        self._debug_log("【插件初始化】开始初始化", {
-            "config": self.config
-        })
+        self._debug_log("【插件初始化】开始", {"config": self.config})
         
         self.memory_manager = MemoryManager(
             plugin_name="astrbot_plugin_starfate_light_memory",
@@ -41,8 +39,6 @@ class LightMemoryPlugin(Star):
             memory_expire_days=self.memory_expire_days,
             debug_mode=self.debug_mode
         )
-        
-        self.tool_handler = ToolHandler(self.memory_manager, debug_mode=self.debug_mode)
         
         self._debug_log("【插件初始化】完成")
         logger.info(f"[StarfateMemory] 插件初始化完成 - debug_mode: {self.debug_mode}")
@@ -54,24 +50,39 @@ class LightMemoryPlugin(Star):
             else:
                 logger.debug(f"[StarfateMemory][DEBUG] {message}")
     
+    def _get_session_id(self, event: AstrMessageEvent) -> str:
+        return event.message_obj.session_id
+    
+    def _get_chat_type(self, event: AstrMessageEvent) -> str:
+        return "group" if event.message_obj.group_id else "private"
+    
     def _is_mentioned(self, event: AstrMessageEvent) -> bool:
-        """检查机器人是否被@"""
         message_obj = event.message_obj
-        self_id = message_obj.self_id
-        
+        self_id = str(message_obj.self_id)
         for comp in message_obj.message:
-            if isinstance(comp, At) and str(comp.qq) == str(self_id):
+            if isinstance(comp, At) and str(comp.qq) == self_id:
                 return True
         return False
     
     def _is_command(self, event: AstrMessageEvent) -> bool:
-        """检查消息是否为命令（以/开头）"""
-        message_str = event.message_str.strip()
-        return message_str.startswith("/")
+        return event.message_str.strip().startswith("/")
     
-    def _is_llm_triggered(self, event: AstrMessageEvent) -> bool:
-        """检查是否触发了LLM（命令不会触发LLM）"""
-        return not self._is_command(event)
+    def _get_role(self, event: AstrMessageEvent) -> str:
+        message_obj = event.message_obj
+        self_id = str(message_obj.self_id)
+        sender_id = str(message_obj.sender.user_id) if message_obj.sender else None
+        return "assistant" if sender_id == self_id else "user"
+    
+    def _format_memory_results(self, results: List[Dict[str, Any]], keywords: str) -> str:
+        lines = [f"找到 {len(results)} 条与「{keywords}」相关的历史记忆：\n"]
+        for i, record in enumerate(results, 1):
+            role_display = "用户" if record["role"] == "user" else "助手"
+            content = record["content"]
+            if len(content) > 300:
+                content = content[:300] + "..."
+            lines.append(f"{i}. [{role_display}] {content}")
+        lines.append("\n请基于以上历史信息，结合用户当前的问题进行回复。")
+        return "\n".join(lines)
     
     @dataclass
     class RecallMemoryTool(FunctionTool[AstrAgentContext]):
@@ -79,142 +90,97 @@ class LightMemoryPlugin(Star):
         
         name: str = "recall_memory"
         description: str = "当需要回忆或查询与用户的历史对话内容时调用此工具。仅在确实需要参考过去对话信息时才使用。"
-        parameters: dict = Field(
-            default_factory=lambda: {
-                "type": "object",
-                "properties": {
-                    "keywords": {
-                        "type": "string",
-                        "description": "检索关键词，多个关键词用空格分隔。请提取用户问题中最核心的词汇。"
-                    }
-                },
-                "required": ["keywords"]
-            }
-        )
+        parameters: dict = field(default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "keywords": {
+                    "type": "string",
+                    "description": "检索关键词，多个关键词用空格分隔。请提取用户问题中最核心的词汇。"
+                }
+            },
+            "required": ["keywords"]
+        })
         
         async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
             event = context.context.event
             keywords = kwargs.get("keywords", "")
             
-            self.plugin_ref._debug_log("【工具调用】recall_memory 被调用", {"keywords": keywords})
+            self.plugin_ref._debug_log("【工具调用】recall_memory", {"keywords": keywords})
             
             if not keywords:
-                self.plugin_ref._debug_log("【工具调用】关键词为空")
                 return ToolExecResult(result="错误：未提供检索关键词。")
             
-            message_obj = event.message_obj
-            if message_obj.group_id:
-                chat_type = "group"
-            else:
-                chat_type = "private"
-            
-            isolated_session_id = f"{chat_type}_{message_obj.session_id}"
-            
-            result_text = await self.plugin_ref.tool_handler.handle_recall_memory(
-                event=event,
-                keywords=keywords,
-                session_id_override=isolated_session_id
+            session_id = self.plugin_ref._get_session_id(event)
+            results = await self.plugin_ref.memory_manager.search_memory(
+                session_id=session_id, keywords=keywords
             )
             
-            self.plugin_ref._debug_log("【工具调用】返回结果", {"result_length": len(result_text)})
-            return ToolExecResult(result=result_text)
+            if not results:
+                return ToolExecResult(result=f"未找到与「{keywords}」相关的历史对话记录。")
+            
+            formatted = self.plugin_ref._format_memory_results(results, keywords)
+            return ToolExecResult(result=formatted)
     
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def on_private_message(self, event: AstrMessageEvent):
-        """私聊消息：无条件记录"""
-        self._debug_log("【私聊监听】收到私聊消息")
-        await self._record_message(event, "private")
+        await self._record_message(event)
     
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
-        """群聊消息：只有被@且触发LLM才记录"""
-        self._debug_log("【群聊监听】收到群聊消息")
-        
+        if self._is_command(event):
+            return
         if not self._is_mentioned(event):
-            self._debug_log("【群聊监听】未被@，跳过记录")
             return
-        
-        if not self._is_llm_triggered(event):
-            self._debug_log("【群聊监听】命令消息，跳过记录")
-            return
-        
-        self._debug_log("【群聊监听】被@且触发LLM，记录消息")
-        await self._record_message(event, "group")
+        await self._record_message(event)
     
-    async def _record_message(self, event: AstrMessageEvent, chat_type: str):
-        """统一的消息记录方法"""
-        message_obj = event.message_obj
-        session_id = message_obj.session_id
-        content = message_obj.message_str
-        
+    async def _record_message(self, event: AstrMessageEvent):
+        content = event.message_obj.message_str
         if not content or not content.strip():
-            self._debug_log("【消息监听】跳过空消息")
             return
         
-        isolated_session_id = f"{chat_type}_{session_id}"
+        session_id = self._get_session_id(event)
+        role = self._get_role(event)
+        chat_type = self._get_chat_type(event)
         
-        self_id = message_obj.self_id
-        sender_id = message_obj.sender.user_id if message_obj.sender else None
-        role = "assistant" if (sender_id and str(sender_id) == str(self_id)) else "user"
-        
-        self._debug_log("【消息监听】准备写入记忆", {
+        self._debug_log("【消息监听】写入记忆", {
+            "session_id": session_id,
             "chat_type": chat_type,
-            "original_session": session_id,
-            "isolated_session": isolated_session_id,
             "role": role,
-            "content_length": len(content),
-            "self_id": self_id,
-            "sender_id": sender_id
+            "content_preview": content[:50]
         })
         
         success = await self.memory_manager.add_memory(
-            session_id=isolated_session_id,
+            session_id=session_id,
             role=role,
             content=content,
-            timestamp=message_obj.timestamp
+            timestamp=event.message_obj.timestamp
         )
         
-        if success:
-            self._debug_log("【消息监听】记忆写入成功")
+        if success and self.debug_mode:
             logger.debug(f"[StarfateMemory] 已记录[{chat_type}]: [{role}] {content[:50]}...")
-        else:
-            self._debug_log("【消息监听】记忆写入失败")
-            logger.warning(f"[StarfateMemory] 记录失败: {isolated_session_id}")
     
     @filter.command("memory_stats")
     async def cmd_memory_stats(self, event: AstrMessageEvent):
-        self._debug_log("【命令】memory_stats 被调用")
-        
         stats = await self.memory_manager.get_stats()
-        
-        response = f"""📊 **轻量记忆统计**
-- 总记忆条数: {stats.get('total_records', 0)}
-- 总用户数: {stats.get('total_users', 0)}
-- 总会话数: {stats.get('total_sessions', 0)}
-- 数据库路径: {stats.get('db_path', 'N/A')}
-- 最大召回数: {self.max_recall_results}
-- 记忆保留: {self.memory_expire_days} 天
-- 调试模式: {'开启' if self.debug_mode else '关闭'}"""
-        
+        response = (
+            f"📊 **轻量记忆统计**\n"
+            f"- 总记忆条数: {stats.get('total_records', 0)}\n"
+            f"- 总会话数: {stats.get('total_sessions', 0)}\n"
+            f"- 最大召回数: {self.max_recall_results}\n"
+            f"- 记忆保留: {self.memory_expire_days} 天\n"
+            f"- 调试模式: {'开启' if self.debug_mode else '关闭'}"
+        )
         yield event.plain_result(response)
     
     @filter.command("memory_recent")
     async def cmd_memory_recent(self, event: AstrMessageEvent, limit: str = "5"):
-        self._debug_log("【命令】memory_recent 被调用", {"limit": limit})
-        
         try:
             limit_num = int(limit)
         except ValueError:
             limit_num = 5
         
-        message_obj = event.message_obj
-        if message_obj.group_id:
-            chat_type = "group"
-        else:
-            chat_type = "private"
-        
-        isolated_session_id = f"{chat_type}_{message_obj.session_id}"
-        records = await self.memory_manager.get_recent_memory(isolated_session_id, limit_num)
+        session_id = self._get_session_id(event)
+        records = await self.memory_manager.get_recent_memory(session_id, limit_num)
         
         if not records:
             yield event.plain_result("当前会话暂无记忆记录。")
@@ -229,25 +195,14 @@ class LightMemoryPlugin(Star):
         yield event.plain_result("\n".join(lines))
     
     @filter.command("memory_search")
-    async def cmd_memory_search(self, event: AstrMessageEvent, keywords: str):
-        """按关键词检索记忆（调试用）"""
-        self._debug_log("【命令】memory_search 被调用", {"keywords": keywords})
-        
+    async def cmd_memory_search(self, event: AstrMessageEvent, *, keywords: str = ""):
+        keywords = keywords.strip()
         if not keywords:
             yield event.plain_result("请提供检索关键词，例如: /memory_search 颜色")
             return
         
-        message_obj = event.message_obj
-        if message_obj.group_id:
-            chat_type = "group"
-        else:
-            chat_type = "private"
-        
-        isolated_session_id = f"{chat_type}_{message_obj.session_id}"
-        results = await self.memory_manager.search_memory(
-            session_id=isolated_session_id,
-            keywords=keywords
-        )
+        session_id = self._get_session_id(event)
+        results = await self.memory_manager.search_memory(session_id=session_id, keywords=keywords)
         
         if not results:
             yield event.plain_result(f"未找到与「{keywords}」相关的记忆。")
@@ -261,31 +216,32 @@ class LightMemoryPlugin(Star):
         
         yield event.plain_result("\n".join(lines))
     
+    @filter.command("memory_export")
+    async def cmd_memory_export(self, event: AstrMessageEvent, format_type: str = "txt"):
+        if format_type not in ("txt", "json"):
+            format_type = "txt"
+        
+        session_id = self._get_session_id(event)
+        filepath = await self.memory_manager.export_memory(session_id, format_type)
+        
+        if filepath is None:
+            yield event.plain_result("❌ 当前会话暂无记忆记录，无法导出。")
+            return
+        
+        yield event.plain_result(f"✅ 记忆已导出 ({format_type} 格式)\n📁 {filepath}")
+    
     @filter.command("memory_clear")
     async def cmd_memory_clear(self, event: AstrMessageEvent):
-        self._debug_log("【命令】memory_clear 被调用")
+        message_str = event.message_str.strip()
         
-        message_obj = event.message_obj
-        if message_obj.group_id:
-            chat_type = "group"
-        else:
-            chat_type = "private"
-        
-        isolated_session_id = f"{chat_type}_{message_obj.session_id}"
-        
-        confirm = event.message_str.replace("/memory_clear", "").strip()
-        if confirm.lower() != "confirm":
+        if not message_str.endswith("confirm"):
             yield event.plain_result("⚠️ 此操作将清除当前会话的所有记忆！如需确认，请输入: /memory_clear confirm")
             return
         
-        success = await self.memory_manager.delete_session_memory(isolated_session_id)
-        if success:
-            self._debug_log("【命令】记忆清除成功")
-            yield event.plain_result("✅ 当前会话的记忆已清除。")
-        else:
-            self._debug_log("【命令】记忆清除失败")
-            yield event.plain_result("❌ 清除失败，请查看日志。")
+        session_id = self._get_session_id(event)
+        deleted = await self.memory_manager.delete_session_memory(session_id)
+        yield event.plain_result(f"✅ 已清除 {deleted} 条记忆。")
     
     async def terminate(self):
-        self._debug_log("【插件卸载】开始卸载")
+        self._debug_log("【插件卸载】")
         logger.info("[StarfateMemory] 插件正在卸载...")
