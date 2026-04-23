@@ -9,12 +9,6 @@
         "type": "int",
         "default": 5
     },
-    "recall_strategy": {
-        "description": "检索策略",
-        "type": "string",
-        "default": "fuzzy",
-        "options": ["fuzzy", "exact"]
-    },
     "memory_expire_days": {
         "description": "记忆保留天数（0 表示永久保留）",
         "type": "int",
