@@ -2,4 +2,4 @@ name: astrbot_plugin_starfate_light_memory
 author: Starfate
 version: 1.0.0
 desc: 轻量级智能记忆插件 - 基于 AI 自主调度的低成本记忆方案
-repo: https://github.com/StarFateYHJM/astrbot_plugin_starfate_light_memory
+repo: https://github.com/starfate/astrbot_plugin_starfate_light_memory
