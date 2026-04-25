@@ -4,7 +4,6 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.event import hook, HookType
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api.message_components import At
@@ -164,33 +163,37 @@ class LightMemoryPlugin(Star):
         if success and self.debug_mode:
             logger.debug(f"[StarfateMemory] 已记录[{chat_type}]: [{role}] {content[:50]}...")
     
-    # ==================== AI 回复记录钩子 ====================
+    # ==================== AI 回复记录 ====================
     
-    @hook(HookType.ON_LLM_RESPONSE)
-    async def on_llm_response(self, event: AstrMessageEvent, resp):
-        """记录 AI 的回复"""
-        self._debug_log("【钩子】LLM 响应，准备记录 AI 回复")
+    @filter.on_after_message_sent()
+    async def on_after_message_sent(self, event: AstrMessageEvent):
+        self._debug_log("【钩子】消息已发送，准备记录")
         
-        try:
-            content = resp.get_plain_text()
-            if not content:
-                self._debug_log("【钩子】AI 回复内容为空")
-                return
-            
-            session_id = self._get_session_id(event)
-            
-            self._debug_log("【钩子】记录 AI 回复", {
-                "session_id": session_id,
-                "content_preview": content[:50]
-            })
-            
-            await self.memory_manager.add_memory(
-                session_id=session_id,
-                role="assistant",
-                content=content
-            )
-        except Exception as e:
-            self._debug_log("【钩子】记录 AI 回复失败", {"error": str(e)})
+        message_obj = event.message_obj
+        content = message_obj.message_str
+        
+        if not content or not content.strip():
+            self._debug_log("【钩子】消息内容为空")
+            return
+        
+        # 只记录 assistant 发出的消息（群聊中可能还有其他消息）
+        if message_obj.role != "assistant":
+            self._debug_log("【钩子】非 AI 回复，跳过", {"role": message_obj.role})
+            return
+        
+        session_id = self._get_session_id(event)
+        
+        self._debug_log("【钩子】记录 AI 回复", {
+            "session_id": session_id,
+            "content_preview": content[:50]
+        })
+        
+        await self.memory_manager.add_memory(
+            session_id=session_id,
+            role="assistant",
+            content=content,
+            timestamp=message_obj.timestamp
+        )
     
     # ==================== 指令 ====================
     
