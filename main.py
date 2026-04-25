@@ -176,9 +176,12 @@ class LightMemoryPlugin(Star):
             self._debug_log("【钩子】消息内容为空")
             return
         
-        # 只记录 assistant 发出的消息（群聊中可能还有其他消息）
-        if message_obj.role != "assistant":
-            self._debug_log("【钩子】非 AI 回复，跳过", {"role": message_obj.role})
+        # 判断是否为 AI 发出的消息
+        self_id = str(message_obj.self_id)
+        sender_id = str(message_obj.sender.user_id) if message_obj.sender else None
+        
+        if sender_id != self_id:
+            self._debug_log("【钩子】非 AI 回复，跳过", {"sender_id": sender_id, "self_id": self_id})
             return
         
         session_id = self._get_session_id(event)
