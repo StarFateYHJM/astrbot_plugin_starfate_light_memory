@@ -165,7 +165,7 @@ class LightMemoryPlugin(Star):
     
     # ==================== AI 回复记录 ====================
     
-    @filter.on_after_message_sent()
+    @filter.after_message_sent()
     async def on_after_message_sent(self, event: AstrMessageEvent):
         self._debug_log("【钩子】消息已发送，准备记录")
         
