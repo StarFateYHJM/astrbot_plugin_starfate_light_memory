@@ -3,7 +3,8 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 
-from astrbot.api.event import filter, AstrMessageEvent, hook, HookType
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.star import hook, HookType
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api.message_components import At
