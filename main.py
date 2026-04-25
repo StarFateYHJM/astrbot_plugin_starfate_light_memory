@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, hook, HookType
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api.message_components import At
@@ -84,6 +84,8 @@ class LightMemoryPlugin(Star):
         lines.append("\n请基于以上历史信息，结合用户当前的问题进行回复。")
         return "\n".join(lines)
     
+    # ==================== LLM 工具 ====================
+    
     @dataclass
     class RecallMemoryTool(FunctionTool[AstrAgentContext]):
         plugin_ref: "LightMemoryPlugin" = None
@@ -120,6 +122,8 @@ class LightMemoryPlugin(Star):
             
             formatted = self.plugin_ref._format_memory_results(results, keywords)
             return ToolExecResult(result=formatted)
+    
+    # ==================== 消息监听 ====================
     
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def on_private_message(self, event: AstrMessageEvent):
@@ -158,6 +162,36 @@ class LightMemoryPlugin(Star):
         
         if success and self.debug_mode:
             logger.debug(f"[StarfateMemory] 已记录[{chat_type}]: [{role}] {content[:50]}...")
+    
+    # ==================== AI 回复记录钩子 ====================
+    
+    @hook(HookType.ON_LLM_RESPONSE)
+    async def on_llm_response(self, event: AstrMessageEvent, resp):
+        """记录 AI 的回复"""
+        self._debug_log("【钩子】LLM 响应，准备记录 AI 回复")
+        
+        try:
+            content = resp.get_plain_text()
+            if not content:
+                self._debug_log("【钩子】AI 回复内容为空")
+                return
+            
+            session_id = self._get_session_id(event)
+            
+            self._debug_log("【钩子】记录 AI 回复", {
+                "session_id": session_id,
+                "content_preview": content[:50]
+            })
+            
+            await self.memory_manager.add_memory(
+                session_id=session_id,
+                role="assistant",
+                content=content
+            )
+        except Exception as e:
+            self._debug_log("【钩子】记录 AI 回复失败", {"error": str(e)})
+    
+    # ==================== 指令 ====================
     
     @filter.command("memory_stats")
     async def cmd_memory_stats(self, event: AstrMessageEvent):
